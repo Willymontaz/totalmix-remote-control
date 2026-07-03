@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <link rel="manifest" href="/manifest.json">
+    <title>RME AN 1/2 Remote</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            /* Verrouillage complet du scroll et de la sélection de texte sur toute la page */
+            touch-action: none; 
+            user-select: none;
+            -webkit-user-select: none;
+            overflow: hidden; 
+        }
+
+        .container {
+            text-align: center;
+            background-color: #1e1e1e;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 8px 24px rgba(0,0,0,0.6);
+            width: 100%;
+            max-width: 360px;
+        }
+
+        h1 { font-size: 1.5rem; margin-bottom: 5px; color: #00e5ff; letter-spacing: 1px; }
+        h2 { font-size: 1rem; color: #888888; margin-top: 0; margin-bottom: 40px; font-weight: normal; }
+
+        .fader-wrapper {
+            height: 320px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 30px;
+            position: relative;
+        }
+
+        #loading {
+            position: absolute;
+            color: #00e5ff;
+            font-size: 0.9rem;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 300px;
+            height: 40px; /* Zone de touche plus large pour le doigt */
+            background: transparent;
+            outline: none;
+            transform: rotate(-90deg); 
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s ease-in;
+            touch-action: none; /* Bloque l'action du navigateur sur le fader */
+        }
+
+        input[type="range"].ready { opacity: 1; }
+
+        /* Le rail du fader (la fente de la console) */
+        input[type="range"]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 8px;
+            background: #0a0a0a;
+            border-radius: 4px;
+            border: 1px solid #333;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.8);
+        }
+
+        /* Le bouton du fader (le capuchon) */
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 40px;
+            height: 20px; /* Forme rectangulaire typique des faders */
+            border-radius: 4px;
+            background: linear-gradient(to bottom, #111, #333);
+            border: 2px solid #00e5ff;
+            box-shadow: 0 0 12px rgba(0, 229, 255, 0.4), 0 4px 6px rgba(0,0,0,0.5);
+            margin-top: -7px; /* Centre le capuchon sur le rail */
+        }
+
+        .value-display {
+            background-color: #000;
+            padding: 10px 20px;
+            border-radius: 8px;
+            display: inline-block;
+            font-size: 1.4rem;
+            font-weight: bold;
+            font-family: 'Courier New', Courier, monospace;
+            color: #00e5ff;
+            border: 1px solid #333;
+            box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>TOTALMIX REMOTE</h1>
+    <h2>Hardware Output : AN 1/2</h2>
+    
+    <div class="fader-wrapper">
+        <div id="loading">En attente de RME...</div>
+        <input type="range" id="volumeFader" min="0" max="100" step="0.5" value="0">
+    </div>
+    
+    <div class="value-display" id="valPercent">-- %</div>
+</div>
+
+<script>
+    const fader = document.getElementById('volumeFader');
+    const display = document.getElementById('valPercent');
+    const loading = document.getElementById('loading');
+    
+    let isDragging = false; 
+    let sendTimeout = null;
+
+    // --- 1. GESTION DU TACTILE / SOURIS ---
+    fader.addEventListener('mousedown', () => isDragging = true);
+    // passive: false permet au navigateur de bloquer ses comportements par défaut si besoin
+    fader.addEventListener('touchstart', () => isDragging = true, {passive: false});
+    
+    const stopDragging = () => {
+        if (isDragging) {
+            isDragging = false;
+            // On force un envoi final précis quand on lâche le fader
+            sendVolume(fader.value); 
+        }
+    };
+    
+    fader.addEventListener('mouseup', stopDragging);
+    fader.addEventListener('touchend', stopDragging);
+
+    // --- 2. CONNEXION PERMANENTE (SSE) ---
+    const evtSource = new EventSource('/api/stream');
+    
+    evtSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const volumePercent = (data.volume * 100).toFixed(1);
+        
+        // On ne met à jour l'interface avec les données serveur QUE si l'utilisateur
+        // n'est pas en train de manipuler le fader (évite l'effet de "tremblement")
+        if (!isDragging) {
+            fader.value = volumePercent;
+            display.innerText = `${Math.round(volumePercent)} %`;
+        }
+
+        loading.style.display = 'none';
+        fader.classList.add('ready');
+    };
+
+    evtSource.onerror = () => {
+        display.innerText = "Hors ligne";
+        fader.classList.remove('ready');
+        loading.style.display = 'block';
+        loading.innerText = "Reconnexion...";
+    };
+
+    // --- 3. ENVOI DES DONNÉES (Avec optimisation des requêtes) ---
+    async function sendVolume(value) {
+        const floatVal = (value / 100).toFixed(4); // Précision augmentée pour l'OSC
+        try {
+            await fetch(`/api/volume?val=${floatVal}`);
+        } catch (err) {
+            console.error('Erreur réseau:', err);
+        }
+    }
+
+    fader.addEventListener('input', (e) => {
+        const val = e.target.value;
+        display.innerText = `${Math.round(val)} %`;
+
+        // "Debounce/Throttle" : Limite l'envoi à une requête toutes les 20ms maximum
+        // pour ne pas noyer l'API Express et la carte RME sous les requêtes HTTP
+        if (!sendTimeout) {
+            sendTimeout = setTimeout(() => {
+                sendVolume(fader.value);
+                sendTimeout = null;
+            }, 20);
+        }
+    });
+</script>
+
+</body>
+</html>

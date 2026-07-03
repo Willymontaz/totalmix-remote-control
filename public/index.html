@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RME Remote (Linéaire dB)</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            overscroll-behavior-y: none; /* Empêche le rebond désagréable sur mobile */
+        }
+
+        .container {
+            text-align: center;
+            background-color: #1e1e1e;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 360px;
+        }
+
+        h1 { font-size: 1.5rem; margin-bottom: 5px; color: #00ff7f; }
+        h2 { font-size: 1rem; color: #aaaaaa; margin-top: 0; margin-bottom: 30px; }
+
+        .fader-wrapper {
+            height: 300px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 30px;
+            position: relative;
+        }
+
+        #loading {
+            position: absolute;
+            color: #00ff7f;
+            font-size: 0.9rem;
+            z-index: 10;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 280px;
+            height: 16px;
+            background: #333;
+            border-radius: 10px;
+            outline: none;
+            transform: rotate(-90deg); 
+            cursor: pointer;
+            opacity: 0; /* Caché pendant la connexion initiale */
+            transition: opacity 0.3s;
+        }
+
+        input[type="range"].ready { opacity: 1; }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #00ff7f;
+            box-shadow: 0 0 15px rgba(0, 255, 127, 0.4);
+            border: 2px solid #121212;
+        }
+
+        .display-panel {
+            background-color: #121212;
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid #333;
+        }
+
+        .db-display {
+            font-size: 1.8rem;
+            font-weight: bold;
+            font-family: monospace;
+            color: #ffffff;
+            margin-bottom: 5px;
+        }
+
+        .percent-display {
+            font-size: 0.9rem;
+            color: #00ff7f;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>TotalMix Remote</h1>
+    <h2>Hardware Output : AN 1/2</h2>
+    
+    <div class="fader-wrapper">
+        <div id="loading">Connexion...</div>
+        <!-- step="0.1" permet 1000 paliers de précision sous le doigt -->
+        <input type="range" id="volumeFader" min="0" max="100" step="0.1" value="0">
+    </div>
+    
+    <div class="display-panel">
+        <div class="db-display" id="valDb">-- dB</div>
+        <div class="percent-display" id="valPercent">-- %</div>
+    </div>
+</div>
+
+<script>
+    // =======================================================================
+    // 1. MOTEUR DSP : MAPPING TOTALMIX & SPLINE CUBIQUE
+    // =======================================================================
+    
+    // Ta table de vérité RME consolidée
+    const points = [
+        { osc: 0, db: -70.0 }, { osc: 1, db: -64.2 }, { osc: 3, db: -60.5 },
+        { osc: 7, db: -55.4 }, { osc: 10, db: -51.3 }, { osc: 20, db: -38.2 },
+        { osc: 30, db: -28.1 }, { osc: 40, db: -19.3 }, { osc: 50, db: -12.1 },
+        { osc: 60, db: -7.2 }, { osc: 65, db: -5.5 }, { osc: 70, db: -4.0 },
+        { osc: 75, db: -2.4 }, { osc: 80, db: -0.7 }, { osc: 82, db: 0.1 }
+    ];
+
+    const MIN_DB = -70.0;
+    const MAX_DB = 0.0;
+    const OSC_FOR_ZERO_DB = 81.776; // Valeur calculée mathématiquement
+
+    // Générateur de la fonction Spline
+    function createMonotoneCubicSpline(data) {
+        const n = data.length;
+        const ms = [], dxs = [];
+        for (let i = 0; i < n - 1; i++) {
+            dxs.push(data[i+1].osc - data[i].osc);
+            ms.push((data[i+1].db - data[i].db) / dxs[i]);
+        }
+        const c = [ms[0]];
+        for (let i = 1; i < n - 1; i++) {
+            if (ms[i-1] * ms[i] <= 0) c.push(0);
+            else c.push(2 * ms[i-1] * ms[i] / (ms[i-1] + ms[i]));
+        }
+        c.push(ms[n - 1]);
+
+        return function(x) {
+            if (x <= data[0].osc) return data[0].db;
+            if (x >= data[n-1].osc) return data[n-1].db;
+            let i = 0;
+            while (i < n - 1 && x > data[i+1].osc) i++;
+            const h = dxs[i], t = (x - data[i].osc) / h;
+            const t2 = t * t, t3 = t2 * t;
+            return (2*t3 - 3*t2 + 1)*data[i].db + (t3 - 2*t2 + t)*h*c[i] + (-2*t3 + 3*t2)*data[i+1].db + (t3 - t2)*h*c[i+1];
+        };
+    }
+
+    const splineDb = createMonotoneCubicSpline(points);
+
+    // Trouver l'OSC (0.0 -> 1.0) à partir d'un dB (Recherche Dichotomique inversée)
+    function dbToOscFloat(targetDb) {
+        if (targetDb <= MIN_DB) return 0.0;
+        if (targetDb >= MAX_DB) return OSC_FOR_ZERO_DB / 100.0;
+
+        let low = 0.0, high = OSC_FOR_ZERO_DB, mid;
+        for (let i = 0; i < 50; i++) {
+            mid = (low + high) / 2;
+            if (splineDb(mid) < targetDb) low = mid; else high = mid;
+        }
+        return mid / 100.0; 
+    }
+
+    // Trouver le dB à partir de l'OSC brut venant du serveur Node.js (0.0 -> 1.0)
+    function oscFloatToDb(oscFloat) {
+        const oscPercent = oscFloat * 100.0;
+        if (oscPercent <= 0) return MIN_DB;
+        if (oscPercent >= OSC_FOR_ZERO_DB) return MAX_DB;
+        return splineDb(oscPercent);
+    }
+
+    // =======================================================================
+    // 2. LOGIQUE UI & RESEAU
+    // =======================================================================
+
+    const fader = document.getElementById('volumeFader');
+    const dbDisplay = document.getElementById('valDb');
+    const percentDisplay = document.getElementById('valPercent');
+    const loading = document.getElementById('loading');
+    
+    let isSending = false;
+    let isDragging = false; 
+
+    // Mise à jour de l'affichage HTML
+    function updateDisplay(sliderValue) {
+        const percent = parseFloat(sliderValue);
+        const currentDb = MIN_DB + (percent / 100) * (MAX_DB - MIN_DB);
+        
+        // Arrondi à une décimale, gère l'affichage propre du 0.0 absolu
+        const displayDb = currentDb >= -0.05 ? "0.0" : currentDb.toFixed(1);
+        
+        dbDisplay.innerText = `${displayDb} dB`;
+        percentDisplay.innerText = `Course: ${percent.toFixed(1)} %`;
+        return currentDb;
+    }
+
+    // --- ENVOI DES DONNÉES AU SERVEUR (Tu bouges le potard web) ---
+    async function sendVolume(sliderValue) {
+        const percent = parseFloat(sliderValue);
+        const targetDb = MIN_DB + (percent / 100) * (MAX_DB - MIN_DB);
+        
+        const oscFloat = dbToOscFloat(targetDb);
+        const valString = oscFloat.toFixed(4); // 4 décimales requises pour RME
+        
+        try {
+            await fetch(`/api/volume?val=${valString}`);
+        } catch (err) {
+            console.error('Erreur réseau:', err);
+        }
+    }
+
+    // Gestion du tactile (très important pour que le temps réel ne fasse pas trembler le bouton sous ton doigt)
+    fader.addEventListener('mousedown', () => isDragging = true);
+    fader.addEventListener('touchstart', () => isDragging = true, {passive: true});
+    
+    const stopDragging = () => {
+        if (isDragging) {
+            isDragging = false;
+            sendVolume(fader.value); 
+        }
+    };
+    fader.addEventListener('mouseup', stopDragging);
+    fader.addEventListener('touchend', stopDragging);
+
+    // Mouvement en direct
+    fader.addEventListener('input', (e) => {
+        updateDisplay(e.target.value);
+        if (!isSending) {
+            isSending = true;
+            sendVolume(e.target.value).finally(() => isSending = false);
+        }
+    });
+
+    // --- RECEPTION DU SERVEUR (Tu bouges TotalMix avec la souris) ---
+    const evtSource = new EventSource('/api/stream');
+    
+    evtSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const oscFloat = data.volume;
+        
+        if (!isDragging) {
+            // Conversion : Valeur OSC -> dB Perçu -> Pourcentage du fader web (0-100)
+            const actualDb = oscFloatToDb(oscFloat);
+            const rawPercent = ((actualDb - MIN_DB) / (MAX_DB - MIN_DB)) * 100;
+            
+            // On s'assure que le potard web ne sort pas du cadre
+            const safePercent = Math.max(0, Math.min(100, rawPercent));
+            
+            fader.value = safePercent;
+            updateDisplay(safePercent);
+        }
+
+        loading.style.display = 'none';
+        fader.classList.add('ready');
+    };
+
+    evtSource.onerror = () => {
+        dbDisplay.innerText = "Hors ligne";
+        percentDisplay.innerText = "Reconnexion...";
+        fader.classList.remove('ready');
+        loading.style.display = 'block';
+    };
+</script>
+
+</body>
+</html>

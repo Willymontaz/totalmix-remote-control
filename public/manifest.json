@@ -1,0 +1,17 @@
+{
+  "short_name": "TotalMix",
+  "name": "TotalMix Remote",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Crect%20width='512'%20height='512'%20rx='96'%20fill='%23121212'/%3E%3Crect%20x='236'%20y='96'%20width='40'%20height='320'%20rx='20'%20fill='%23333'/%3E%3Ccircle%20cx='256'%20cy='300'%20r='56'%20fill='%2300ff7f'/%3E%3C/svg%3E",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "display": "standalone",
+  "orientation": "portrait"
+}

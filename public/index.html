@@ -4,6 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RME Remote (Linéaire dB)</title>
+
+    <!-- PWA : installable sur l'écran d'accueil, plein écran, thème sombre -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#121212">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TotalMix Remote">
     <style>
         body {
             background-color: #121212;
@@ -34,12 +41,27 @@
         h2 { font-size: 1rem; color: #aaaaaa; margin-top: 0; margin-bottom: 30px; }
 
         .fader-wrapper {
-            height: 300px;
+            height: 320px;
             display: flex;
             justify-content: center;
             align-items: center;
+            gap: 40px;
             margin-bottom: 30px;
             position: relative;
+        }
+
+        .slider-column {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .slider-label {
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
         #loading {
@@ -52,13 +74,16 @@
         input[type="range"] {
             -webkit-appearance: none;
             appearance: none;
-            width: 280px;
-            height: 16px;
+            /* Slider vertical natif : le drag suit le doigt correctement */
+            writing-mode: vertical-lr;
+            direction: rtl;
+            width: 16px;
+            height: 300px;
             background: #333;
             border-radius: 10px;
             outline: none;
-            transform: rotate(-90deg); 
             cursor: pointer;
+            touch-action: none; /* capture le drag vertical au lieu de scroller la page */
             opacity: 0; /* Caché pendant la connexion initiale */
             transition: opacity 0.3s;
         }
@@ -75,6 +100,32 @@
             box-shadow: 0 0 15px rgba(0, 255, 127, 0.4);
             border: 2px solid #121212;
         }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #00ff7f;
+            border: 2px solid #121212;
+        }
+
+        /* Slider fin : plus court, thumb plus petit, couleur distincte (cyan) */
+        #fineFader {
+            height: 220px;
+            background: #2a2a2a;
+        }
+        #fineFader::-webkit-slider-thumb {
+            width: 32px;
+            height: 32px;
+            background: #00e5ff;
+            box-shadow: 0 0 12px rgba(0, 229, 255, 0.4);
+        }
+        #fineFader::-moz-range-thumb {
+            width: 32px;
+            height: 32px;
+            background: #00e5ff;
+        }
+        .slider-label.fine { color: #00e5ff; opacity: 0.7; }
 
         .display-panel {
             background-color: #121212;
@@ -106,8 +157,16 @@
     
     <div class="fader-wrapper">
         <div id="loading">Connexion...</div>
-        <!-- step="0.1" permet 1000 paliers de précision sous le doigt -->
-        <input type="range" id="volumeFader" min="0" max="100" step="0.1" value="0">
+        <div class="slider-column">
+            <!-- step="0.1" permet 1000 paliers de précision sous le doigt -->
+            <input type="range" id="volumeFader" min="0" max="100" step="0.1" value="0">
+            <span class="slider-label">Master</span>
+        </div>
+        <div class="slider-column">
+            <!-- Zoom ±3 dB autour du niveau courant ; recentré à 0 après chaque geste -->
+            <input type="range" id="fineFader" min="-3" max="3" step="0.05" value="0">
+            <span class="slider-label fine">Fine ±3 dB</span>
+        </div>
     </div>
     
     <div class="display-panel">
@@ -188,12 +247,30 @@
     // =======================================================================
 
     const fader = document.getElementById('volumeFader');
+    const fineFader = document.getElementById('fineFader');
     const dbDisplay = document.getElementById('valDb');
     const percentDisplay = document.getElementById('valPercent');
     const loading = document.getElementById('loading');
-    
+
+    const FINE_RANGE_DB = 3; // Le slider fin couvre ±3 dB autour du niveau courant
+
     let isSending = false;
-    let isDragging = false; 
+    let isDragging = false; // Vrai tant qu'un des deux sliders est manipulé
+
+    // Conversions entre position du fader principal (0-100) et dB perçu
+    const percentToDb = (p) => MIN_DB + (p / 100) * (MAX_DB - MIN_DB);
+    const dbToPercent = (db) => ((db - MIN_DB) / (MAX_DB - MIN_DB)) * 100;
+
+    // --- RETOUR HAPTIQUE (mobile) ---
+    const canVibrate = 'vibrate' in navigator;
+    let lastVibrate = 0;
+    function haptic() {
+        if (!canVibrate) return;
+        const now = Date.now();
+        if (now - lastVibrate < 40) return; // throttle : évite le buzz continu pendant un drag
+        lastVibrate = now;
+        navigator.vibrate(8);
+    }
 
     // Mise à jour de l'affichage HTML
     function updateDisplay(sliderValue) {
@@ -236,14 +313,49 @@
     fader.addEventListener('mouseup', stopDragging);
     fader.addEventListener('touchend', stopDragging);
 
-    // Mouvement en direct
+    // Mouvement en direct (fader principal)
     fader.addEventListener('input', (e) => {
         updateDisplay(e.target.value);
+        haptic();
         if (!isSending) {
             isSending = true;
             sendVolume(e.target.value).finally(() => isSending = false);
         }
     });
+
+    // --- SLIDER FIN (zoom ±3 dB autour du niveau courant) ---
+    let fineBaseDb = 0; // Niveau capturé au début du geste ; le slider applique un offset
+
+    const startFine = () => {
+        isDragging = true;
+        fineBaseDb = percentToDb(parseFloat(fader.value));
+    };
+    fineFader.addEventListener('mousedown', startFine);
+    fineFader.addEventListener('touchstart', startFine, { passive: true });
+
+    fineFader.addEventListener('input', () => {
+        const offsetDb = parseFloat(fineFader.value); // ∈ [-3, +3]
+        const newDb = Math.max(MIN_DB, Math.min(MAX_DB, fineBaseDb + offsetDb));
+        const percent = dbToPercent(newDb);
+
+        fader.value = percent;      // le fader principal reflète le réglage fin
+        updateDisplay(percent);
+        haptic();
+        if (!isSending) {
+            isSending = true;
+            sendVolume(percent).finally(() => isSending = false);
+        }
+    });
+
+    const stopFine = () => {
+        if (isDragging) {
+            isDragging = false;
+            sendVolume(fader.value); // valeur finale garantie
+        }
+        fineFader.value = 0; // recentre pour permettre un nouvel ajustement
+    };
+    fineFader.addEventListener('mouseup', stopFine);
+    fineFader.addEventListener('touchend', stopFine);
 
     // --- RECEPTION DU SERVEUR (Tu bouges TotalMix avec la souris) ---
     const evtSource = new EventSource('/api/stream');
@@ -261,17 +373,20 @@
             const safePercent = Math.max(0, Math.min(100, rawPercent));
             
             fader.value = safePercent;
+            fineFader.value = 0; // le slider fin reste centré sur le niveau courant
             updateDisplay(safePercent);
         }
 
         loading.style.display = 'none';
         fader.classList.add('ready');
+        fineFader.classList.add('ready');
     };
 
     evtSource.onerror = () => {
         dbDisplay.innerText = "Hors ligne";
         percentDisplay.innerText = "Reconnexion...";
         fader.classList.remove('ready');
+        fineFader.classList.remove('ready');
         loading.style.display = 'block';
     };
 </script>

@@ -59,25 +59,39 @@ udpPort.on("error", (error) => {
     console.warn("⚠️ Erreur OSC capturée (paquet malformé ignoré) :", error.message);
 });
 
+// Demande à TotalMix de se caler sur le bus Output et de renvoyer son état actuel.
+// Utilisé au démarrage ET à chaque nouvelle connexion web pour rafraîchir la valeur.
+let lastStateRequest = 0;
+function requestTotalmixState() {
+    // Debounce : évite de spammer TotalMix si plusieurs clients se connectent d'un coup
+    const now = Date.now();
+    if (now - lastStateRequest < 500) return;
+    lastStateRequest = now;
+
+    // 1. Force TotalMix à se mettre sur le bus des Sorties (Hardware Outputs).
+    //    Ce changement de page suffit généralement à faire re-émettre les faders visibles.
+    udpPort.send({
+        address: '/1/busOutput',
+        args: [{ type: 'f', value: 1.0 }]
+    });
+
+    // 2. Demande un dump complet de l'état actuel de la table.
+    //    Note : si /setSendState n'est pas reconnu par TotalMix, le /1/busOutput ci-dessus
+    //    reste le mécanisme fiable de rafraîchissement.
+    udpPort.send({
+        address: '/setSendState',
+        args: [{ type: 'f', value: 1.0 }]
+    });
+}
+
 // Séquence d'initialisation dès que le port réseau est ouvert
 udpPort.on("ready", () => {
     console.log(`📡 Serveur OSC en écoute des retours sur le port ${RME_OUT_PORT}`);
-    
+
     // Laisse 500ms à la connexion pour se stabiliser, puis configure TotalMix
     setTimeout(() => {
         console.log("🔄 Alignement initial avec TotalMix...");
-        
-        // 1. Force TotalMix à se mettre sur le bus des Sorties (Hardware Outputs)
-        udpPort.send({
-            address: '/1/busOutput',
-            args: [{ type: 'f', value: 1.0 }]
-        });
-
-        // 2. Demande un dump complet de l'état actuel de la table
-        udpPort.send({
-            address: '/setSendState',
-            args: [{ type: 'f', value: 1.0 }]
-        });
+        requestTotalmixState();
     }, 500);
 
     // Entretien de la connexion (Le Ping indispensable pour RME)
@@ -105,8 +119,12 @@ app.get('/api/stream', (req, res) => {
     });
 
     connectedClients.push(res);
-    // Envoi de l'état actuel dès la connexion
+    // Envoi immédiat du dernier état connu (peut être obsolète juste après le démarrage)
     res.write(`data: ${JSON.stringify({ volume: currentVolume, bus: activeBus })}\n\n`);
+
+    // Re-demande l'état réel à TotalMix : la vraie valeur arrivera via le handler "message"
+    // et sera poussée à ce client (et aux autres) en <1s, corrigeant une valeur obsolète.
+    requestTotalmixState();
 
     req.on('close', () => {
         connectedClients = connectedClients.filter(client => client !== res);

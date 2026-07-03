@@ -1,6 +1,7 @@
 const express = require('express');
 const osc = require('osc');
 const path = require('path');
+const camilla = require('./camilla');
 
 const app = express();
 const PORT = 3000;
@@ -155,6 +156,36 @@ app.get('/api/volume', (req, res) => {
         });
         res.sendStatus(200);
     }, 5); // Léger délai de 5ms pour s'assurer que le changement de bus est assimilé par RME
+});
+
+// --- 3. PONT CAMILLADSP (Expander & Declipper : on/off + activité) ---
+
+const DSP_PROCESSORS = ['expander', 'declipper'];
+
+// État combiné des processeurs correctifs : activé (case) ET en action (voyant).
+// Sondé en continu par le téléphone (~1 s) pour rafraîchir cases et voyants.
+app.get('/api/dsp/status', async (req, res) => {
+    try {
+        res.json(await camilla.getStatus());
+    } catch (err) {
+        // CamillaDSP injoignable : on le signale sans casser la remote TotalMix.
+        res.json({ available: false, error: err.message });
+    }
+});
+
+// Activation / désactivation d'un processeur.
+// Appel : POST /api/dsp/:proc?on=true|false   (proc = expander | declipper)
+app.post('/api/dsp/:proc', async (req, res) => {
+    const proc = req.params.proc;
+    if (!DSP_PROCESSORS.includes(proc)) {
+        return res.status(404).json({ error: `Processeur inconnu : ${proc}` });
+    }
+    const on = req.query.on === 'true';
+    try {
+        res.json(await camilla.setProcessorActive(proc, on));
+    } catch (err) {
+        res.status(502).json({ available: false, found: false, active: false, name: null, error: err.message });
+    }
 });
 
 // Lancement du serveur Web

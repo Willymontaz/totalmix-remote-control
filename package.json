@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
-    "osc": "^2.4.5"
+    "osc": "^2.4.5",
+    "ws": "^8.18.0"
   }
 }

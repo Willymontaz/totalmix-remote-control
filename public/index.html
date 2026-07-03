@@ -20,7 +20,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
             padding: 20px;
             box-sizing: border-box;
@@ -147,6 +147,111 @@
             color: #00ff7f;
             font-family: monospace;
         }
+
+        /* --- Panneau processeurs correctifs (CamillaDSP) --- */
+        .dsp-panel {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .dsp-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background-color: #121212;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 10px 14px;
+        }
+
+        /* Voyant "en action" : gris = coupé, vert sombre = armé, vert vif
+           pulsé = intervient en ce moment. */
+        .led {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #444;
+            flex-shrink: 0;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .led.armed { background: #2a5a3f; }
+        .led.engaging {
+            background: #00ff7f;
+            box-shadow: 0 0 10px rgba(0, 255, 127, 0.8);
+            animation: ledPulse 0.8s ease-in-out infinite;
+        }
+        @keyframes ledPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.35; }
+        }
+
+        .dsp-name {
+            font-size: 0.9rem;
+            font-family: monospace;
+            color: #ffffff;
+        }
+        .dsp-state {
+            font-size: 0.7rem;
+            font-family: monospace;
+            color: #888;
+            margin-left: auto;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* la vraie checkbox est masquée, on stylise .switch-track */
+        .switch input {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .switch-track {
+            position: relative;
+            width: 52px;
+            height: 30px;
+            background: #333;
+            border-radius: 15px;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+
+        .switch-thumb {
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #888;
+            transition: transform 0.2s, background 0.2s;
+        }
+
+        .switch input:checked + .switch-track {
+            background: rgba(0, 255, 127, 0.25);
+        }
+        .switch input:checked + .switch-track .switch-thumb {
+            transform: translateX(22px);
+            background: #00ff7f;
+            box-shadow: 0 0 12px rgba(0, 255, 127, 0.5);
+        }
+
+        .switch input:disabled + .switch-track {
+            opacity: 0.4;
+        }
+        .switch.disabled { cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -172,6 +277,27 @@
     <div class="display-panel">
         <div class="db-display" id="valDb">-- dB</div>
         <div class="percent-display" id="valPercent">-- %</div>
+    </div>
+
+    <div class="dsp-panel">
+        <div class="dsp-row" id="row-expander">
+            <span class="led" id="led-expander"></span>
+            <span class="dsp-name">Expander</span>
+            <span class="dsp-state" id="state-expander">…</span>
+            <label class="switch">
+                <input type="checkbox" id="toggle-expander" disabled>
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+        </div>
+        <div class="dsp-row" id="row-declipper">
+            <span class="led" id="led-declipper"></span>
+            <span class="dsp-name">Declipper</span>
+            <span class="dsp-state" id="state-declipper">…</span>
+            <label class="switch">
+                <input type="checkbox" id="toggle-declipper" disabled>
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+        </div>
     </div>
 </div>
 
@@ -389,6 +515,106 @@
         fineFader.classList.remove('ready');
         loading.style.display = 'block';
     };
+
+    // =======================================================================
+    // 3. PROCESSEURS CORRECTIFS CAMILLADSP
+    //    Pour chacun : un interrupteur (activer / couper) et un voyant qui
+    //    s'allume quand il *intervient* (expansion appliquée / clips réparés),
+    //    pour décider d'un coup d'œil s'il faut le garder ou le couper.
+    // =======================================================================
+
+    const PROCS = ['expander', 'declipper'];
+    const els = {};
+    const busy = {}; // vrai pendant un aller-retour serveur (toggle en cours)
+
+    PROCS.forEach((p) => {
+        els[p] = {
+            led: document.getElementById(`led-${p}`),
+            state: document.getElementById(`state-${p}`),
+            toggle: document.getElementById(`toggle-${p}`),
+        };
+        busy[p] = false;
+    });
+
+    // Applique l'état d'un processeur à sa ligne (case + voyant + libellé).
+    function renderProc(p, s) {
+        const e = els[p];
+        const sw = e.toggle.closest('.switch');
+
+        if (!s || !s.available) {
+            e.toggle.disabled = true;
+            if (!busy[p]) e.toggle.checked = false;
+            e.led.className = 'led';
+            e.state.textContent = 'hors ligne';
+            sw.classList.add('disabled');
+            return;
+        }
+        if (!s.found) {
+            e.toggle.disabled = true;
+            e.toggle.checked = false;
+            e.led.className = 'led';
+            e.state.textContent = 'absent';
+            sw.classList.add('disabled');
+            return;
+        }
+
+        sw.classList.remove('disabled');
+        if (!busy[p]) {
+            e.toggle.disabled = false;
+            e.toggle.checked = !!s.active;
+        }
+
+        if (s.engaging) {
+            e.led.className = 'led engaging';
+            e.state.textContent = 'en action';
+        } else if (s.active) {
+            e.led.className = 'led armed';
+            e.state.textContent = 'actif';
+        } else {
+            e.led.className = 'led';
+            e.state.textContent = 'coupé';
+        }
+    }
+
+    // Sondage périodique : rafraîchit cases ET voyants (état + activité).
+    async function loadStatus() {
+        try {
+            const r = await fetch('/api/dsp/status');
+            const st = await r.json();
+            PROCS.forEach((p) => renderProc(p, st.available ? st[p] : null));
+        } catch (e) {
+            PROCS.forEach((p) => renderProc(p, null));
+        }
+    }
+
+    // Bascule un processeur quand on touche son interrupteur.
+    PROCS.forEach((p) => {
+        els[p].toggle.addEventListener('change', async () => {
+            const desired = els[p].toggle.checked;
+            busy[p] = true;
+            els[p].toggle.disabled = true;
+            els[p].state.textContent = '…';
+            try {
+                const r = await fetch(`/api/dsp/${p}?on=${desired}`, { method: 'POST' });
+                const s = await r.json();
+                busy[p] = false;
+                // Réponse du toggle : pas de champ "engaging" -> le prochain
+                // sondage (<1 s) rallumera le voyant si besoin.
+                renderProc(p, {
+                    available: s.available !== false,
+                    found: s.found !== false,
+                    active: s.active,
+                    engaging: false,
+                });
+            } catch (e) {
+                busy[p] = false;
+                renderProc(p, null);
+            }
+        });
+    });
+
+    loadStatus();
+    setInterval(loadStatus, 1000); // voyants d'activité + reflète les changements externes
 </script>
 
 </body>

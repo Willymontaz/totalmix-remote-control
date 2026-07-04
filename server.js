@@ -11,6 +11,16 @@ const RME_IP = '127.0.0.1';
 const RME_IN_PORT = 7001;  // Port sur lequel TotalMix ÉCOUTE
 const RME_OUT_PORT = 9001; // Port sur lequel TotalMix ENVOIE
 
+// Mets DEBUG_OSC=1 pour tracer chaque message OSC reçu (utile pour vérifier
+// que TotalMix pousse bien /1/volume1 quand tu bouges un fader à la main).
+const DEBUG = process.env.DEBUG_OSC === '1';
+
+// Cadence de réconciliation : on redemande périodiquement l'état réel à TotalMix
+// pour que les réglages faits *directement* sur TotalMix (ou les paquets UDP
+// perdus — UDP ne garantit rien) finissent toujours par se refléter dans la GUI,
+// même si TotalMix n'a pas poussé l'update spontanément.
+const RECONCILE_MS = 2000;
+
 // Variables d'état
 let currentVolume = 0.5;
 let activeBus = 'output'; // Par défaut, on cible les sorties
@@ -33,7 +43,7 @@ udpPort.on("message", (oscMsg) => {
     if (!oscMsg.args || oscMsg.args.length === 0) return;
     const value = oscMsg.args[0].value;
 
-    //console.log(`📩 OSC Reçu : ${address} => ${value}`); 
+    if (DEBUG) console.log(`📩 OSC Reçu : ${address} => ${value}`);
 
     // Détection du bus actif (si TotalMix l'envoie lors d'un clic dans l'interface)
     // Note : TotalMix envoie souvent 1.0 (float) quand un bus est activé
@@ -64,9 +74,11 @@ udpPort.on("error", (error) => {
 // Utilisé au démarrage ET à chaque nouvelle connexion web pour rafraîchir la valeur.
 let lastStateRequest = 0;
 function requestTotalmixState() {
-    // Debounce : évite de spammer TotalMix si plusieurs clients se connectent d'un coup
+    // Debounce court : évite de spammer TotalMix si plusieurs clients se connectent
+    // d'un coup, sans pour autant avaler la demande de rafraîchissement d'un client
+    // qui se connecte juste après l'alignement initial.
     const now = Date.now();
-    if (now - lastStateRequest < 500) return;
+    if (now - lastStateRequest < 150) return;
     lastStateRequest = now;
 
     // 1. Force TotalMix à se mettre sur le bus des Sorties (Hardware Outputs).
@@ -101,7 +113,13 @@ udpPort.on("ready", () => {
             address: '/1/ping',
             args: [{ type: 'f', value: 1.0 }]
         });
-    }, 2000);
+
+        // Réconciliation : tant qu'au moins un client regarde, on redemande l'état
+        // réel. Si TotalMix pousse déjà spontanément (fader bougé à la main), le
+        // filtre "currentVolume !== numericVolume" évite tout push SSE redondant ;
+        // sinon, ce poll garantit que la GUI rattrape la vraie valeur en <2 s.
+        if (connectedClients.length > 0) requestTotalmixState();
+    }, RECONCILE_MS);
 });
 
 // Ouverture officielle du canal UDP
